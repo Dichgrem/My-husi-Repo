@@ -1,0 +1,181 @@
+name: Build & Publish Arch Repo
+on:
+  schedule:
+    - cron: '0 6 * * *'
+  workflow_dispatch:
+    inputs:
+      force_rebuild:
+        description: 'force_rebuild'
+        type: boolean
+        default: false
+  push:
+    branches:
+      - main
+    paths:
+      - 'husi.properties'
+      - 'release/linux/**'
+permissions:
+  contents: write
+jobs:
+  check-version:
+    name: Check upstream version
+    runs-on: ubuntu-latest
+    outputs:
+      upstream_ver: ${{ steps.upstream.outputs.version }}
+      need_build: ${{ steps.compare.outputs.need_build }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Get latest release info
+        id: upstream
+        run: |
+          VERSION=$(curl -fsSL "https://codeberg.org/xchacha20-poly1305/husi/releases" \
+            | grep -oP 'fr\.husi-\K[0-9]+\.[0-9]+\.[0-9]+' \
+            | head -n 1)
+          echo "version=$VERSION" >> $GITHUB_OUTPUT
+          echo "Husi version: $VERSION"
+      - name: Compare with current built version
+        id: compare
+        run: |
+          CURRENT=$(cat version.txt 2>/dev/null || echo "none")
+          UPSTREAM="${{ steps.upstream.outputs.version }}"
+          echo "Current: $CURRENT  Upstream: $UPSTREAM"
+          if [ "${{ inputs.force_rebuild }}" = "true" ] || [ "$UPSTREAM" != "$CURRENT" ]; then
+            echo "need_build=true" >> $GITHUB_OUTPUT
+          else
+            echo "need_build=false" >> $GITHUB_OUTPUT
+            echo "Already up to date, skipping."
+          fi
+  download:
+    name: Download prebuilt package
+    needs: check-version
+    if: needs.check-version.outputs.need_build == 'true'
+    runs-on: ubuntu-latest
+    container:
+      image: archlinux:latest
+    env:
+      VERSION: ${{ needs.check-version.outputs.upstream_ver }}
+    steps:
+      - name: Install dependencies
+        run: |
+          pacman -Syu --noconfirm
+          pacman -S --noconfirm curl
+      - name: Download x86_64 package
+        run: |
+          URL="https://codeberg.org/xchacha20-poly1305/husi/releases/download/v${VERSION}/fr.husi-${VERSION}-1-x86_64.pkg.tar.zst"
+          curl -fSL "$URL" -o husi-x86_64.pkg.tar.zst
+      - name: Prepare repo directory
+        run: |
+          mkdir -p repo/x86_64
+          mv husi-x86_64.pkg.tar.zst repo/x86_64/
+      - name: Build pacman database
+        run: |
+          repo-add --new --remove \
+            repo/x86_64/fr.husi.db.tar.gz \
+            repo/x86_64/*.pkg.tar.zst
+          cd repo/x86_64
+          ln -sf fr.husi.db.tar.gz    fr.husi.db
+          ln -sf fr.husi.files.tar.gz fr.husi.files
+      - name: Record built version
+        run: echo "${VERSION}" > repo/version.txt
+      - name: Upload repo as artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: arch-repo
+          path: repo/
+          retention-days: 1
+  deploy:
+    name: Deploy to GitHub Pages
+    needs: [check-version, download]
+    runs-on: ubuntu-latest
+    env:
+      VERSION: ${{ needs.check-version.outputs.upstream_ver }}
+    steps:
+      - name: Checkout main branch
+        uses: actions/checkout@v4
+        with:
+          ref: main
+      - name: Download built repo artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: arch-repo
+          path: incoming/
+      - name: Commit version.txt to main
+        run: |
+          git config --global user.name  "github-actions[bot]"
+          git config --global user.email "github-actions[bot]@users.noreply.github.com"
+          mv incoming/version.txt ./version.txt
+          git add version.txt
+          git commit -m "chore: update to v${VERSION}" || true
+          git push origin main || true
+      - name: Checkout or create gh-pages
+        run: |
+          git clone --depth 1 --branch gh-pages \
+            https://x-access-token:${{ secrets.GITHUB_TOKEN }}@github.com/${{ github.repository }} \
+            gh-pages-dir \
+          || (git clone --depth 1 \
+            https://x-access-token:${{ secrets.GITHUB_TOKEN }}@github.com/${{ github.repository }} \
+            gh-pages-dir \
+            && cd gh-pages-dir \
+            && git checkout --orphan gh-pages \
+            && git rm -rf . || true)
+          rm -f gh-pages-dir/README.md gh-pages-dir/LICENSE
+      - name: Replace old package
+        run: |
+          cd gh-pages-dir
+          mkdir -p x86_64
+          rm -f x86_64/fr.husi-*.pkg.tar.zst
+          rm -f x86_64/fr.husi-*.pkg.tar.zst.sig
+          cp ../incoming/x86_64/*.pkg.tar.zst               x86_64/
+          cp ../incoming/x86_64/fr.husi.db.tar.gz   x86_64/
+          cp ../incoming/x86_64/fr.husi.files.tar.gz x86_64/
+          cd x86_64
+          ln -sf fr.husi.db.tar.gz    fr.husi.db
+          ln -sf fr.husi.files.tar.gz fr.husi.files
+      - name: Generate index.html
+        env:
+          NEW_VER: ${{ needs.check-version.outputs.upstream_ver }}
+          REPO_OWNER: ${{ github.repository_owner }}
+          REPO_NAME: ${{ github.event.repository.name }}
+        run: |
+          cd gh-pages-dir
+          cat > index.html << 'HTMLEOF'
+          <!DOCTYPE html>
+          <html lang="zh">
+          <head>
+            <meta charset="UTF-8">
+            <meta name="viewport" content="width=device-width, initial-scale=1.0">
+            <title>Husi Arch Repo</title>
+            <style>
+              body { font-family: monospace; max-width: 720px; margin: 48px auto; padding: 0 24px; line-height: 1.6; }
+              h1   { border-bottom: 2px solid #333; padding-bottom: 8px; }
+              pre  { background: #f5f5f5; padding: 16px; border-radius: 6px; overflow-x: auto; }
+              code { background: #f5f5f5; padding: 2px 5px; border-radius: 3px; }
+              footer { color: #888; font-size: 0.85em; margin-top: 48px; }
+            </style>
+          </head>
+          <body>
+            <h1>Husi Arch Repo</h1>
+            <p>自动跟踪上游 Release 构建的非官方 pacman 仓库。</p>
+            <h2>使用方法</h2>
+            <p>在 <code>/etc/pacman.conf</code> 末尾添加：</p>
+            <pre>[husi]
+          SigLevel = Optional TrustAll
+          Server = https://REPO_OWNER.github.io/REPO_NAME/x86_64</pre>
+            <p>然后安装：</p>
+            <pre>sudo pacman -Sy
+          sudo pacman -S fr.husi</pre>
+            <p>需要 Java 21 或更高版本。推荐安装 <code>jdk21-openjdk</code>。</p>
+          </body>
+          </html>
+          HTMLEOF
+          sed -i "s/REPO_OWNER/${REPO_OWNER}/g" index.html
+          sed -i "s/REPO_NAME/${REPO_NAME}/g"   index.html
+      - name: Commit and push to gh-pages
+        run: |-
+          cd gh-pages-dir
+          git config user.name  "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add -A
+          git commit -m "deploy: v${{ needs.check-version.outputs.upstream_ver }}" || true
+          git push origin gh-pages
