@@ -7,7 +7,7 @@
 Add to the end of `/etc/pacman.conf`:
 
 ```ini
-[husi]
+[fr.husi]
 SigLevel = Optional TrustAll
 Server = https://Dichgrem.github.io/My-husi-Repo/x86_64
 ```

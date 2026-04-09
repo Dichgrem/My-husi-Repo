@@ -159,7 +159,7 @@ jobs:
             <p>自动跟踪上游 Release 构建的非官方 pacman 仓库。</p>
             <h2>使用方法</h2>
             <p>在 <code>/etc/pacman.conf</code> 末尾添加：</p>
-            <pre>[husi]
+            <pre>[fr.husi]
           SigLevel = Optional TrustAll
           Server = https://REPO_OWNER.github.io/REPO_NAME/x86_64</pre>
             <p>然后安装：</p>
