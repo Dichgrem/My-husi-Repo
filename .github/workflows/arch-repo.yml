@@ -22,18 +22,31 @@ jobs:
     runs-on: ubuntu-latest
     outputs:
       upstream_ver: ${{ steps.upstream.outputs.version }}
+      upstream_tag: ${{ steps.upstream.outputs.tag }}
       need_build: ${{ steps.compare.outputs.need_build }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4
-      - name: Get latest release info
+      - name: Get latest stable release info
         id: upstream
         run: |
-          VERSION=$(curl -fsSL "https://codeberg.org/xchacha20-poly1305/husi/releases" \
-            | grep -oP 'fr\.husi-\K[0-9]+\.[0-9]+\.[0-9]+' \
-            | head -n 1)
+          # Use Codeberg API to get latest release
+          RESPONSE=$(curl -fsSL "https://codeberg.org/api/v1/repos/xchacha20-poly1305/husi/releases/latest")
+          
+          # Extract tag name (e.g., v1.2.0-alpha.0)
+          TAG_NAME=$(echo "$RESPONSE" | grep -oP '"tag_name":\s*"\K[^"]+')
+          
+          if [ -z "$TAG_NAME" ]; then
+            echo "Error: Failed to get latest release from Codeberg API"
+            exit 1
+          fi
+          
+          # Remove 'v' prefix if present
+          VERSION="${TAG_NAME#v}"
+          
+          echo "tag=$TAG_NAME" >> $GITHUB_OUTPUT
           echo "version=$VERSION" >> $GITHUB_OUTPUT
-          echo "Husi version: $VERSION"
+          echo "Latest release: $TAG_NAME (version: $VERSION)"
       - name: Compare with current built version
         id: compare
         run: |
@@ -55,6 +68,7 @@ jobs:
       image: archlinux:latest
     env:
       VERSION: ${{ needs.check-version.outputs.upstream_ver }}
+      TAG: ${{ needs.check-version.outputs.upstream_tag }}
     steps:
       - name: Install dependencies
         run: |
@@ -62,8 +76,27 @@ jobs:
           pacman -S --noconfirm curl
       - name: Download x86_64 package
         run: |
-          URL="https://codeberg.org/xchacha20-poly1305/husi/releases/download/v${VERSION}/fr.husi-${VERSION}-1-x86_64.pkg.tar.zst"
-          curl -fSL "$URL" -o husi-x86_64.pkg.tar.zst
+          # Use Codeberg API to get release assets
+          API_URL="https://codeberg.org/api/v1/repos/xchacha20-poly1305/husi/releases/tags/${TAG}"
+          RESPONSE=$(curl -fsSL "$API_URL")
+          
+          # Find the x86_64 Arch Linux package
+          PKG_FILENAME=$(echo "$RESPONSE" | grep -oP '"name":\s*"\K[^"]*fr\.husi-[^"]*x86_64\.pkg\.tar\.zst' | head -n 1)
+          
+          if [ -z "$PKG_FILENAME" ]; then
+            echo "Error: x86_64 Arch Linux package not found in release assets"
+            echo "Available assets:"
+            echo "$RESPONSE" | grep -oP '"name":\s*"\K[^"]+' | head -20 || true
+            exit 1
+          fi
+          
+          URL="https://codeberg.org/xchacha20-poly1305/husi/releases/download/${TAG}/${PKG_FILENAME}"
+          echo "Downloading: $PKG_FILENAME"
+          echo "From: $URL"
+          
+          # Download the package
+          curl -fSL "$URL" -o "husi-x86_64.pkg.tar.zst"
+          echo "Download successful: $PKG_FILENAME"
       - name: Prepare repo directory
         run: |
           mkdir -p repo/x86_64
@@ -90,6 +123,7 @@ jobs:
     runs-on: ubuntu-latest
     env:
       VERSION: ${{ needs.check-version.outputs.upstream_ver }}
+      TAG: ${{ needs.check-version.outputs.upstream_tag }}
     steps:
       - name: Checkout main branch
         uses: actions/checkout@v4
