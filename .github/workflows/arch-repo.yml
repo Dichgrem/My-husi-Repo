@@ -8,12 +8,6 @@ on:
         description: 'force_rebuild'
         type: boolean
         default: false
-  push:
-    branches:
-      - main
-    paths:
-      - 'husi.properties'
-      - 'release/linux/**'
 permissions:
   contents: write
 jobs:
